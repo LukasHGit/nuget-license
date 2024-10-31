@@ -8,6 +8,7 @@ using CommandLine.Text;
 using FluentAssertions;
 using FluentAssertions.Execution;
 using NUnit.Framework;
+using System.ComponentModel;
 
 namespace NugetUtility.Tests
 {
@@ -50,7 +51,7 @@ namespace NugetUtility.Tests
             AddMethods();
             var packages = _methods.GetProjectReferences(_projectPath);
             var referencedpackages = packages.Select(p => { var split = p.Split(","); return new PackageNameAndVersion { Name = split[0], Version = split[1] }; });
-            var information = await _methods.GetNugetInformationAsync(_projectPath, referencedpackages);
+            var information = await _methods.GetNugetInformationAsync(_projectPath, referencedpackages, new List<string>());
 
             packages.Select(x => x.Split(',')[0].ToLower())
                 .Should()
@@ -64,7 +65,7 @@ namespace NugetUtility.Tests
             AddMethods();
             var packages = package.Split(';', StringSplitOptions.RemoveEmptyEntries);
             var referencedpackages = packages.Select(p => { var split = p.Split(","); return new PackageNameAndVersion { Name = split[0], Version = split[1] }; });
-            var information = await _methods.GetNugetInformationAsync(_projectPath, referencedpackages);
+            var information = await _methods.GetNugetInformationAsync(_projectPath, referencedpackages, new List<string>());
 
             packages.Select(x => x.Split(',')[0])
                 .Should()
@@ -78,7 +79,7 @@ namespace NugetUtility.Tests
             AddMethods();
             var packages = package.Split(';', StringSplitOptions.RemoveEmptyEntries);
             var referencedpackages = packages.Select(p => { var split = p.Split(","); return new PackageNameAndVersion { Name = split[0], Version = split[1] }; });
-            var information = await _methods.GetNugetInformationAsync(_projectPath, referencedpackages);
+            var information = await _methods.GetNugetInformationAsync(_projectPath, referencedpackages, new List<string>());
 
             packages.Select(x => x.Split(',')[0])
                 .Should()
@@ -395,7 +396,7 @@ namespace NugetUtility.Tests
 
             var referencedpackages = new PackageNameAndVersion[] { new PackageNameAndVersion { Name = package, Version = version } };
 
-            Assert.DoesNotThrowAsync(async () => await _methods.GetNugetInformationAsync(_projectPath, referencedpackages));
+            Assert.DoesNotThrowAsync(async () => await _methods.GetNugetInformationAsync(_projectPath, referencedpackages, new List<string>()));
         }
 
         [Test]

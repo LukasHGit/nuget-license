@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -76,11 +77,11 @@ namespace NugetUtility
                 }
                 else
                 {
-                _httpClient = new HttpClient(httpClientHandler)
-                {
-                    BaseAddress = new Uri(nugetUrl),
-                    Timeout = TimeSpan.FromSeconds(packageOptions.Timeout)
-                };
+                    _httpClient = new HttpClient(httpClientHandler)
+                    {
+                        BaseAddress = new Uri(nugetUrl),
+                        Timeout = TimeSpan.FromSeconds(packageOptions.Timeout)
+                    };
                 }
             }
 
@@ -94,8 +95,9 @@ namespace NugetUtility
         /// </summary>
         /// <param name="project">project name</param>
         /// <param name="packages">List of projects</param>
+        /// <param name="dependencyCallStack">List of already checked dependencies</param>
         /// <returns></returns>
-        public async Task<PackageList> GetNugetInformationAsync(string project, IEnumerable<PackageNameAndVersion> packages)
+        public async Task<PackageList> GetNugetInformationAsync(string project, IEnumerable<PackageNameAndVersion> packages, List<string> dependencyCallStack)
         {
             var licenses = new PackageList();
             foreach (var packageWithVersion in packages)
@@ -136,8 +138,17 @@ namespace NugetUtility
                         {
                             try
                             {
+                                if (!dependencyCallStack.Contains(packageWithVersion.Name + packageWithVersion.Version))
+                                {
+                                    dependencyCallStack.Add(packageWithVersion.Name + packageWithVersion.Version);
+                                }
+                                else
+                                {
+                                    continue;
+                                }
+
                                 using var textReader = new StreamReader(nuspecPath);
-                                await ReadNuspecFile(project, licenses, packageWithVersion.Name, version, lookupKey, textReader);
+                                await ReadNuspecFile(project, licenses, packageWithVersion.Name, version, lookupKey, textReader, dependencyCallStack);
                                 continue;
                             }
                             catch (Exception exc)
@@ -180,7 +191,7 @@ namespace NugetUtility
                             if (fallbackResult is Package)
                             {
                                 licenses.Add($"{packageWithVersion.Name},{version}", fallbackResult);
-                                await this.AddTransitivePackages(project, licenses, fallbackResult);
+                                await this.AddTransitivePackages(project, licenses, fallbackResult, dependencyCallStack);
                                 _requestCache[lookupKey] = fallbackResult;
                                 await HandleLicensing(fallbackResult);
                             }
@@ -198,7 +209,15 @@ namespace NugetUtility
                         {
                             try
                             {
-                                await ReadNuspecFile(project, licenses, packageWithVersion.Name, version, lookupKey, textReader);
+                                if (!dependencyCallStack.Contains(packageWithVersion.Name + packageWithVersion.Version))
+                                {
+                                    dependencyCallStack.Add(packageWithVersion.Name + packageWithVersion.Version);
+                                }
+                                else
+                                {
+                                    continue;
+                                }
+                                await ReadNuspecFile(project, licenses, packageWithVersion.Name, version, lookupKey, textReader, dependencyCallStack);
                             }
                             catch (Exception e)
                             {
@@ -311,18 +330,18 @@ namespace NugetUtility
             }
         }
 
-        private async Task ReadNuspecFile(string project, PackageList licenses, string package, string version, Tuple<string, string> lookupKey, StreamReader textReader)
+        private async Task ReadNuspecFile(string project, PackageList licenses, string package, string version, Tuple<string, string> lookupKey, StreamReader textReader, List<string> dependencyCallStack)
         {
             if (_serializer.Deserialize(new NamespaceIgnorantXmlTextReader(textReader)) is Package result)
             {
                 licenses.Add($"{package},{version}", result);
-                await this.AddTransitivePackages(project, licenses, result);
+                await this.AddTransitivePackages(project, licenses, result, dependencyCallStack);
                 _requestCache[lookupKey] = result;
                 await HandleLicensing(result);
             }
         }
 
-        private async Task AddTransitivePackages(string project, PackageList licenses, Package result)
+        private async Task AddTransitivePackages(string project, PackageList licenses, Package result, List<string> dependencyCallStack)
         {
             var groups = result.Metadata?.Dependencies?.Group;
             if (_packageOptions.IncludeTransitive && groups != null && !_packageOptions.UseProjectAssetsJson)
@@ -330,13 +349,10 @@ namespace NugetUtility
             {
                 foreach (var group in groups)
                 {
-                    var dependant =
-                        group
-                        .Dependency
-                        .Where(e => !licenses.Keys.Contains($"{e.Id},{e.Version}"))
+                    var dependant = group.Dependency.Where(e => !licenses.Keys.Contains($"{e.Id},{e.Version}"))
                         .Select(e => new PackageNameAndVersion { Name = e.Id, Version = e.Version });
 
-                    var dependantPackages = await GetNugetInformationAsync(project, dependant);
+                    var dependantPackages = await GetNugetInformationAsync(project, dependant, dependencyCallStack);
                     foreach (var dependantPackage in dependantPackages)
                     {
                         if (!licenses.ContainsKey(dependantPackage.Key))
@@ -362,7 +378,7 @@ namespace NugetUtility
                     return new PackageNameAndVersion { Name = split[0], Version = split[1] };
                 });
                 WriteOutput(Environment.NewLine + "Project:" + projectFile + Environment.NewLine, logLevel: LogLevel.Information);
-                var currentProjectLicenses = await this.GetNugetInformationAsync(projectFile, referencedPackages);
+                var currentProjectLicenses = await this.GetNugetInformationAsync(projectFile, referencedPackages, new List<string>());
                 licenses[projectFile] = currentProjectLicenses;
             }
 
@@ -520,7 +536,7 @@ namespace NugetUtility
                 }
             };
         }
-        
+
         public IValidationResult<KeyValuePair<string, Package>> ValidateLicenses(Dictionary<string, PackageList> projectPackages)
         {
             if (_packageOptions.AllowedLicenseType.Count == 0)
@@ -529,7 +545,7 @@ namespace NugetUtility
             }
 
             WriteOutput(() => $"Starting {nameof(ValidateLicenses)}...", logLevel: LogLevel.Verbose);
-            
+
             var invalidPackages = projectPackages
                 .SelectMany(kvp => kvp.Value.Select(p => new KeyValuePair<string, Package>(kvp.Key, p.Value)))
                 .Where(p => !_packageOptions.AllowedLicenseType.Any(allowed =>
@@ -583,7 +599,7 @@ namespace NugetUtility
             }
 
             WriteOutput(() => $"Starting {nameof(ValidateAllowedLicenses)}...", logLevel: LogLevel.Verbose);
-            
+
             var invalidPackages = projectPackages
                 .Where(p => !_packageOptions.AllowedLicenseType.Any(allowed =>
                 {
@@ -619,7 +635,7 @@ namespace NugetUtility
             var invalidPackages = projectPackages
                 .Where(LicenseIsForbidden)
                 .ToList();
-            
+
             return new ValidationResult<LibraryInfo> { IsValid = invalidPackages.Count == 0, InvalidPackages = invalidPackages };
 
             bool LicenseIsForbidden(LibraryInfo info)
@@ -1068,7 +1084,7 @@ namespace NugetUtility
                     catch (Exception ex) when (ex is TaskCanceledException || ex is OperationCanceledException)
                     {
                         WriteOutput($"{ex.GetType().Name} during download of license url {info.LicenseUrl} exception {ex.Message}", logLevel: LogLevel.Verbose);
-                         break;
+                        break;
                     }
                 } while (true);
             }
